@@ -1,0 +1,31 @@
+# Sensitive credentials
+*.json
+!package.json
+config.yaml
+
+# Local state
+state.db
+*.db
+
+# Virtual environment
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Logs and debug
+logs/
+debug_images/
+*.log
+
+# macOS
+.DS_Store
+
+# IDE
+*.code-workspace
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.temp

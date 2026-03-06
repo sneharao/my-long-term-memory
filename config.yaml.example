@@ -1,0 +1,33 @@
+remarkable:
+  sync_folder: "/"  # Root level - all notebooks at root
+
+obsidian:
+  vault_path: "/path/to/your/Obsidian Vault"
+  append_marker: "\n\n---\n## Session: {date}\n\n"
+
+anki:
+  url: "http://localhost:8765"
+  deck_prefix: ""  # No prefix, use notebook name directly
+  model_name: "Basic"
+
+ai:
+  project_id: "your-gcp-project-id"
+  location: "us-central1"  # or your preferred region
+  model: "gemini-2.5-flash"
+  key_path: "your-service-account-key.json"
+  thinking_budget: 2048
+
+schedule:
+  time: "20:30"
+  timezone: "Europe/London"
+
+state:
+  db_path: "state.db"
+
+logging:
+  level: "INFO"
+  log_dir: "logs"
+
+screenshots:
+  enabled: false
+  source_dir: "~/Desktop"

@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+    ========================================================================
+    reMarkable Sync LaunchAgent Configuration
+    ========================================================================
+
+    This launchd plist schedules automatic daily syncing of reMarkable notes
+    to the long-term memory system.
+
+    Installation:
+    1. Copy this file to ~/Library/LaunchAgents/
+       cp com.spidugu.remarkable-sync.plist ~/Library/LaunchAgents/
+
+    2. Load the launch agent to activate it:
+       launchctl load ~/Library/LaunchAgents/com.spidugu.remarkable-sync.plist
+
+    Management:
+    - Check status:
+      launchctl list | grep remarkable
+
+    - Unload (disable) the agent:
+      launchctl unload ~/Library/LaunchAgents/com.spidugu.remarkable-sync.plist
+
+    - Reload after making changes:
+      launchctl unload ~/Library/LaunchAgents/com.spidugu.remarkable-sync.plist
+      launchctl load ~/Library/LaunchAgents/com.spidugu.remarkable-sync.plist
+
+    - View logs:
+      tail -f logs/sync.log
+      tail -f logs/sync_error.log
+
+    ========================================================================
+    -->
+
+    <!-- Unique identifier for this launch agent -->
+    <key>Label</key>
+    <string>com.spidugu.remarkable-sync</string>
+
+    <!--
+    Program to execute: Python interpreter from virtual environment
+    followed by the sync script
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/spidugu/Downloads/projects/my-long-term-memory/.venv/bin/python</string>
+        <string>remarkable_sync.py</string>
+    </array>
+
+    <!--
+    Working directory for the script execution
+    Ensures relative paths work correctly
+    -->
+    <key>WorkingDirectory</key>
+    <string>/Users/spidugu/Downloads/projects/my-long-term-memory</string>
+
+    <!--
+    Environment variables needed for the script:
+    - PATH: Include /usr/local/bin where rmapi is installed
+    - DYLD_FALLBACK_LIBRARY_PATH: For Cairo library used by cairosvg
+    -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+        <key>DYLD_FALLBACK_LIBRARY_PATH</key>
+        <string>/opt/homebrew/opt/cairo/lib</string>
+    </dict>
+
+    <!--
+    Schedule: Run daily at 8:30 PM (20:30)
+    Hour: 0-23 (24-hour format)
+    Minute: 0-59
+    -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>20</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <!--
+    Standard output log file
+    Contains normal execution output and status messages
+    -->
+    <key>StandardOutPath</key>
+    <string>logs/sync.log</string>
+
+    <!--
+    Standard error log file
+    Contains error messages and debugging information
+    -->
+    <key>StandardErrorPath</key>
+    <string>logs/sync_error.log</string>
+
+    <!--
+    Run the job even if the previous instance is still running
+    Set to false to prevent overlapping executions
+    -->
+    <key>RunAtLoad</key>
+    <false/>
+
+</dict>
+</plist>
