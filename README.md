@@ -311,6 +311,111 @@ launchctl unload ~/Library/LaunchAgents/com.spidugu.remarkable-sync.plist
 - **Highlighter colors**: Some newer highlighter colors (e.g., color ID 9) are not supported by the `rmc` library. Pages using these will be skipped with a warning.
 - **Deleted pages**: Pages deleted on Remarkable may still appear in metadata but won't have .rm files.
 - **Format warnings**: You may see "Some data has not been read" warnings - this is normal for newer Remarkable formats.
+## Remarkable Cloud API Limitations
+
+### No Partial Downloads
+
+The Remarkable Cloud API and `rmapi` have fundamental constraints that affect the sync workflow:
+
+#### Document-Level Download Only
+
+| What You Might Want | What's Actually Possible | Why |
+|---------------------|-------------------------|-----|
+| Download only page 5 from a notebook | ❌ Not possible | Remarkable stores entire documents as single `.rmdoc` blobs |
+| Download pages 5-10 from a notebook | ❌ Not possible | No API endpoint exists for page-level downloads |
+| Download only changed pages | ❌ Not possible | Must download entire `.rmdoc` file (all pages) |
+| Download only specific document by name | ✅ Possible | `rmapi get "Document Name"` works |
+
+#### How Documents Are Stored
+
+```
+Remarkable Cloud
+└── "AWS Cloud Practitioner" (single unit)
+    └── AWS_Cloud_Practitioner.rmdoc (ZIP file)
+        ├── metadata.json
+        ├── page-uuid-1.rm
+        ├── page-uuid-2.rm
+        ├── page-uuid-3.rm
+        └── ... (all pages bundled together)
+```
+
+**Key Point:** The `.rmdoc` file is downloaded as a single ZIP archive containing ALL pages. The Remarkable Cloud API does not expose individual page files for download.
+
+#### Impact on This Project
+
+| Optimization | Status | Implementation |
+|--------------|--------|----------------|
+| **Skip downloading unchanged documents** | ✅ Implemented | Filter by modification timestamp |
+| **Download only specific pages** | ❌ Not possible | API limitation |
+| **Skip converting unchanged pages to PNG** | ✅ Implemented | Lazy conversion with hash comparison |
+| **Skip transcribing unchanged pages** | ✅ Implemented | SHA256 hash-based change detection |
+
+**Optimization Strategy:**
+- ✅ We optimize at the **processing level** (only transcribe changed pages)
+- ❌ We cannot optimize at the **download level** (must download all pages)
+- ✅ The expensive part (AI API calls) is already optimized
+
+#### Comparison with Alternatives
+
+| Method | Page-Level Access? | Our Approach |
+|--------|-------------------|--------------|
+| **Remarkable Cloud API** | ❌ No | Only way to access cloud notebooks |
+| **rmapi CLI** | ❌ No | Wrapper around cloud API |
+| **USB connection** | ⚠️ Possible (direct file access) | Not implemented - requires device connection |
+| **Official Remarkable sync** | ❌ No | Only syncs to Remarkable apps |
+
+### Performance Impact
+
+For a 12-page notebook where only page 10 changed:
+
+| Step | Time | Can Optimize? |
+|------|------|---------------|
+| Download .rmdoc (all 12 pages) | ~5 seconds | ❌ No - API limitation |
+| Extract ZIP | ~1 second | ❌ No - must extract |
+| Convert pages to PNG | ~3 seconds | ✅ **Yes - lazy conversion** |
+| Hash comparison | ~0.5 seconds | ✅ Already optimized |
+| Transcribe changed pages | $0.01 (1 page) | ✅ **Already optimized** |
+
+**Total overhead:** ~6 seconds of unavoidable download/extract time
+**Cost savings:** 90% reduction in API costs ($0.01 vs $0.12 for full notebook)
+
+The download overhead is acceptable because:
+- Download is fast (~5 seconds)
+- We save 90% on AI API costs (the expensive part)
+- Alternative (USB access) requires device connection
+
+### Workarounds Implemented
+
+Since we cannot avoid downloading all pages, we implemented:
+
+1. **Quick check optimization** (new in this version):
+   - First converts only the last page to PNG
+   - Compares hash with stored hash
+   - If unchanged → "No edits, skip processing"
+   - If changed → Continue checking other pages
+
+2. **Lazy page conversion**:
+   - Only converts pages to PNG when needed
+   - Caches converted pages
+   - Skips conversion for unchanged pages
+
+3. **Smart change detection**:
+   - SHA256 hashes detect pixel-level changes
+   - Only transcribes pages that actually changed
+   - Stores hashes in SQLite for fast comparison
+
+### Future Possibilities
+
+Potential improvements if Remarkable adds API features:
+
+| Feature | Impact | Likelihood |
+|---------|--------|------------|
+| Page-level download API | Would eliminate download overhead | Low (no official API) |
+| Metadata-only sync | Could check for changes before download | Low |
+| Webhook notifications | Could trigger sync only when needed | Low |
+| Official API release | Would enable better optimizations | Unknown |
+
+For now, the current approach (download all, process only changed pages) is the best possible solution given the API constraints.
 
 ## Troubleshooting
 

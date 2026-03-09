@@ -214,3 +214,124 @@ class RemarkableClient:
     def get_all_document_names(self) -> list[str]:
         """Get list of all document names."""
         return [doc.name for doc in self.list_documents()]
+
+    def download_and_extract(self, doc_name: str, output_dir: Optional[str] = None) -> 'ExtractedDocument':
+        """Download document and extract without converting to PNG.
+
+        Returns an ExtractedDocument object that supports lazy page conversion.
+        This allows checking the last page first before converting all pages.
+
+        Note: Cleanup of output_dir is handled by the caller (remarkable_sync.py's finally block).
+        """
+        if output_dir is None:
+            output_dir = tempfile.mkdtemp(prefix="remarkable_")
+
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        doc_path = f"{self.sync_folder.rstrip('/')}/{doc_name}"
+        logger.info(f"Downloading '{doc_name}' to {output_dir}")
+
+        # Download .rmdoc
+        cmd = ["rmapi", "-ni", "get", doc_path]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, cwd=str(output_path))
+            if result.returncode != 0:
+                raise RemarkableError(f"Failed to download '{doc_name}': {result.stderr or result.stdout}")
+        except subprocess.TimeoutExpired:
+            raise RemarkableError(f"Download of '{doc_name}' timed out")
+
+        # Extract zip
+        rmdoc_files = list(output_path.glob("*.rmdoc"))
+        if not rmdoc_files:
+            raise RemarkableError(f"No .rmdoc file found for '{doc_name}'")
+
+        extract_dir = output_path / "extracted"
+        extract_dir.mkdir(exist_ok=True)
+        with zipfile.ZipFile(rmdoc_files[0], 'r') as z:
+            z.extractall(extract_dir)
+
+        # Get page order from .content file
+        content_files = list(extract_dir.glob("*.content"))
+        if not content_files:
+            raise RemarkableError(f"No .content file found in {doc_name}")
+
+        with open(content_files[0], 'r') as f:
+            content_data = json.load(f)
+
+        page_ids = []
+        if "cPages" in content_data and "pages" in content_data["cPages"]:
+            page_ids = [p["id"] for p in content_data["cPages"]["pages"]]
+
+        # Find .rm directory
+        rm_dirs = [d for d in extract_dir.iterdir() if d.is_dir()]
+        if not rm_dirs:
+            raise RemarkableError(f"No .rm directory found in {doc_name}")
+        rm_dir = rm_dirs[0]
+
+        images_dir = output_path / "images"
+        images_dir.mkdir(exist_ok=True)
+
+        logger.info(f"Extracted {len(page_ids)} pages (lazy conversion enabled)")
+        return ExtractedDocument(
+            page_ids=page_ids,
+            rm_dir=rm_dir,
+            images_dir=images_dir,
+            convert_func=self._convert_rm_to_png
+        )
+
+
+class ExtractedDocument:
+    """Extracted Remarkable document with lazy PNG conversion.
+
+    Allows converting only specific pages to PNG on demand,
+    enabling "last page first" optimization to check for changes
+    before converting all pages.
+    """
+
+    def __init__(self, page_ids: List[str], rm_dir: Path, images_dir: Path, convert_func: callable):
+        self.page_ids = page_ids
+        self.rm_dir = rm_dir
+        self.images_dir = images_dir
+        self.convert_func = convert_func
+        self._converted_pages = {}
+
+    @property
+    def page_count(self) -> int:
+        """Total number of pages in the document."""
+        return len(self.page_ids)
+
+    def convert_page(self, page_num: int) -> Optional[str]:
+        """Convert a single page (zero-indexed) to PNG. Returns path or None."""
+        if page_num in self._converted_pages:
+            return self._converted_pages[page_num]
+
+        if page_num < 0 or page_num >= len(self.page_ids):
+            return None
+
+        page_id = self.page_ids[page_num]
+        rm_file = self.rm_dir / f"{page_id}.rm"
+
+        if not rm_file.exists():
+            return None
+
+        png_path = self.images_dir / f"page_{page_num+1:03d}.png"
+
+        try:
+            self.convert_func(rm_file, png_path)
+            self._converted_pages[page_num] = str(png_path)
+            return str(png_path)
+        except Exception as e:
+            logger.warning(f"Page {page_num} conversion failed: {e}")
+            return None
+
+    def convert_pages(self, page_nums: List[int]) -> List[str]:
+        """Convert specific pages to PNG. Returns list of paths."""
+        return [p for p in (self.convert_page(n) for n in page_nums) if p]
+
+    def convert_all_pages(self) -> List[str]:
+        """Convert all pages to PNG."""
+        return self.convert_pages(list(range(self.page_count)))
+
+    def get_all_converted_paths(self) -> List[str]:
+        """Get all converted PNG paths sorted by page number."""
+        return [self._converted_pages[k] for k in sorted(self._converted_pages.keys())]

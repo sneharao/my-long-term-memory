@@ -29,3 +29,6 @@ debug_images/
 # Temporary files
 *.tmp
 *.temp
+
+# Documentation files
+docs/

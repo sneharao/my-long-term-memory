@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import yaml
+from PIL import Image
 
 from lib.remarkable import RemarkableClient, RemarkableError
 from lib.change_detector import ChangeDetector
@@ -94,7 +95,13 @@ def process_document(doc_name: str, doc_id: str, doc_modified: int,
                      anki_client: AnkiClient, state_db: StateDB, temp_dir: Path,
                      logger: logging.Logger, dry_run: bool = False, force: bool = False,
                      transferred_screenshots: List[str] = None) -> Dict:
-    """Process a single Remarkable document."""
+    """Process a single Remarkable document with optimized lazy page conversion.
+
+    Optimization: Only converts pages to PNG when needed.
+    1. First checks if new pages exist (beyond stored page count)
+    2. Then checks last page hash to detect changes
+    3. Only converts pages that need transcription
+    """
     transferred_screenshots = transferred_screenshots or []
     stats = {'pages_processed': 0, 'pages_changed': 0, 'cards_created': 0, 'success': False}
 
@@ -106,35 +113,99 @@ def process_document(doc_name: str, doc_id: str, doc_modified: int,
             logger.info("First sync for this document")
             doc_record = state_db.upsert_document(doc_id, doc_name, "/", doc_modified, 0)
 
-        logger.info("Downloading and converting to images...")
         if dry_run:
-            logger.info("[DRY RUN] Would download and convert")
+            logger.info("[DRY RUN] Would download and process")
             stats['success'] = True
             return stats
 
+        # Download and extract (no PNG conversion yet)
+        logger.info("Downloading document...")
         try:
-            image_paths = rm_client.download_document_images(doc_name, str(temp_dir))
-            logger.info(f"Converted {len(image_paths)} pages")
+            extracted_doc = rm_client.download_and_extract(doc_name, str(temp_dir))
         except RemarkableError as e:
             logger.error(f"Download failed: {e}")
             return stats
 
-        page_count = len(image_paths)
-        state_db.upsert_document(doc_id, doc_name, "/", doc_modified, page_count)
+        current_page_count = extracted_doc.page_count
+        stored_page_count = doc_record.page_count if doc_record else 0
+        logger.info(f"Pages: {current_page_count} current, {stored_page_count} previously stored")
 
-        logger.info("Detecting changed pages...")
-        changed_pages = list(range(page_count)) if force else change_detector.detect_changed_images(doc_id, image_paths)
+        # Update document record with new page count
+        state_db.upsert_document(doc_id, doc_name, "/", doc_modified, current_page_count)
+
+        # Force mode: convert and process all pages
+        if force:
+            logger.info("Force mode: converting all pages...")
+            extracted_doc.convert_all_pages()
+            changed_pages = list(range(current_page_count))
+        else:
+            changed_pages = []
+
+            # Check for NEW pages (beyond stored count)
+            if current_page_count > stored_page_count:
+                new_page_nums = list(range(stored_page_count, current_page_count))
+                logger.info(f"Found {len(new_page_nums)} new page(s): {[p+1 for p in new_page_nums]}")
+                changed_pages.extend(new_page_nums)
+
+            # Quick check: compare last stored page's hash
+            if stored_page_count > 0:
+                last_stored_page = stored_page_count - 1
+                logger.info(f"Checking last stored page ({last_stored_page + 1}) for changes...")
+
+                # Convert only the last stored page
+                last_page_path = extracted_doc.convert_page(last_stored_page)
+                if last_page_path:
+                    stored_hash = state_db.get_page_hash(doc_id, last_stored_page)
+                    current_hash = change_detector._compute_image_file_hash(last_page_path)
+
+                    if stored_hash == current_hash:
+                        logger.info("Last page unchanged - no edits to existing pages")
+                    else:
+                        logger.info("Last page changed - checking all existing pages...")
+                        # Convert remaining existing pages and check for changes
+                        for page_num in range(stored_page_count):
+                            if page_num == last_stored_page:
+                                # Already checked
+                                if stored_hash != current_hash:
+                                    changed_pages.append(page_num)
+                            else:
+                                page_path = extracted_doc.convert_page(page_num)
+                                if page_path:
+                                    stored = state_db.get_page_hash(doc_id, page_num)
+                                    current = change_detector._compute_image_file_hash(page_path)
+                                    if stored != current:
+                                        changed_pages.append(page_num)
+
+            # Convert new pages to PNG if not already converted
+            for page_num in changed_pages:
+                extracted_doc.convert_page(page_num)
+
+        # Sort changed pages
+        changed_pages = sorted(set(changed_pages))
         stats['pages_changed'] = len(changed_pages)
         logger.info(f"Found {len(changed_pages)} changed page(s)")
 
         if not changed_pages:
-            logger.info("No changes, skipping")
+            logger.info("All pages already transcribed - no changes detected")
             state_db.mark_document_synced(doc_id)
             stats['success'] = True
             return stats
 
-        logger.info(f"Transcribing {len(changed_pages)} page(s)...")
-        transcriptions = transcriber.transcribe_images(image_paths, [p + 1 for p in changed_pages])
+        # Build list of paths for changed pages only
+        changed_page_paths = []
+        for page_num in changed_pages:
+            path = extracted_doc.convert_page(page_num)
+            if path:
+                changed_page_paths.append((page_num, path))
+
+        logger.info(f"Transcribing {len(changed_page_paths)} page(s)...")
+
+        # Transcribe each changed page individually
+        transcriptions = {}
+        for page_num, path in changed_page_paths:
+            logger.info(f"  Transcribing page {page_num + 1}...")
+            img = Image.open(path)
+            transcriptions[page_num + 1] = transcriber._transcribe_single_image(img)
         stats['pages_processed'] = len(transcriptions)
 
         combined_text = "\n\n".join([f"--- Page {n} ---\n{t}" for n, t in sorted(transcriptions.items())])
@@ -180,7 +251,11 @@ def process_document(doc_name: str, doc_id: str, doc_modified: int,
             stats['cards_created'] = cards_added
             logger.info(f"Added {cards_added} card(s) to Anki")
 
-        change_detector.update_image_hashes(doc_id, image_paths, changed_pages)
+        # Update hashes for changed pages
+        for page_num, path in changed_page_paths:
+            new_hash = change_detector._compute_image_file_hash(path)
+            state_db.set_page_hash(doc_id, page_num, new_hash)
+
         state_db.mark_document_synced(doc_id)
         stats['success'] = True
         logger.info(f"✓ Done: {stats['pages_processed']} pages, {stats['cards_created']} cards")
@@ -296,6 +371,35 @@ def run_sync(config: Dict, logger: logging.Logger, dry_run: bool = False,
             shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def refresh_hashes(doc_name: str, config: Dict, logger: logging.Logger) -> bool:
+    """Update page hashes without transcribing (useful after changing image settings)."""
+    logger.info(f"\n{'='*60}\nREFRESHING HASHES: {doc_name}\n{'='*60}")
+
+    try:
+        sync_folder = config.get('remarkable', {}).get('sync_folder', '/')
+        db_path = config.get('state', {}).get('db_path', 'state.db')
+
+        rm_client = RemarkableClient(sync_folder)
+        temp_dir = Path(tempfile.mkdtemp(prefix='remarkable_hash_'))
+
+        logger.info("Downloading and converting to images...")
+        images = rm_client.download_document_images(doc_name, str(temp_dir))
+        logger.info(f"Converted {len(images)} pages")
+
+        with StateDB(db_path) as db:
+            detector = ChangeDetector(db)
+            detector.update_image_hashes(doc_name, images)
+            logger.info(f"✓ Updated hashes for {len(images)} pages")
+
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        logger.info("Done! Hashes updated, no transcription performed.")
+        return True
+
+    except Exception as e:
+        logger.error(f"✗ Failed: {e}")
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(description='Sync Remarkable to Obsidian and Anki')
     parser.add_argument('--config', default='config.yaml', help='Config file path')
@@ -303,6 +407,7 @@ def main():
     parser.add_argument('--document', metavar='NAME', help='Process specific notebook')
     parser.add_argument('--force', action='store_true', help='Process all pages')
     parser.add_argument('-i', '--interactive', action='store_true', help='Select documents interactively')
+    parser.add_argument('--refresh-hashes', action='store_true', help='Update hashes without transcribing (requires --document)')
     args = parser.parse_args()
 
     try:
@@ -311,7 +416,13 @@ def main():
         log_dir = config.get('logging', {}).get('log_dir', 'logs')
         logger = setup_logging(log_level, log_dir)
 
-        success = run_sync(config, logger, args.dry_run, args.document, args.force, args.interactive)
+        if args.refresh_hashes:
+            if not args.document:
+                print("ERROR: --refresh-hashes requires --document", file=sys.stderr)
+                sys.exit(1)
+            success = refresh_hashes(args.document, config, logger)
+        else:
+            success = run_sync(config, logger, args.dry_run, args.document, args.force, args.interactive)
         sys.exit(0 if success else 1)
 
     except FileNotFoundError as e:
