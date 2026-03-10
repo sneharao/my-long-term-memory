@@ -287,3 +287,88 @@ def get_default_writer() -> ObsidianWriter:
         >>> writer.create_note("My Note", "# Hello World")
     """
     return ObsidianWriter(DEFAULT_VAULT_PATH)
+
+
+def prompt_and_transfer_screenshots(
+    obsidian_writer: ObsidianWriter,
+    screenshots_cfg: dict,
+    doc_modified: int,
+    dry_run: bool = False,
+    logger = None
+) -> List[str]:
+    """
+    Prompt user for screenshot date and transfer matching screenshots.
+
+    This function handles the interactive prompt for screenshot date selection
+    and orchestrates the screenshot transfer process. It shows the Remarkable
+    sync timestamp as reference and allows the user to specify which date's
+    screenshots to retrieve.
+
+    Args:
+        obsidian_writer: ObsidianWriter instance for transferring screenshots
+        screenshots_cfg: Screenshot configuration dict with 'enabled' and 'source_dir'
+        doc_modified: Unix timestamp of when document was synced to Remarkable Cloud
+        dry_run: If True, skip actual transfer (default: False)
+        logger: Logger instance for logging messages (optional)
+
+    Returns:
+        List[str]: List of transferred screenshot filenames, empty if skipped/failed
+
+    Example:
+        >>> screenshots = prompt_and_transfer_screenshots(
+        ...     writer, {'enabled': True, 'source_dir': '~/Desktop'},
+        ...     1709876415, dry_run=False, logger=my_logger
+        ... )
+    """
+    transferred_screenshots = []
+
+    if not screenshots_cfg.get('enabled') or dry_run:
+        return transferred_screenshots
+
+    # Display prompt header
+    print("\n" + "="*60)
+    print("SCREENSHOT TRANSFER")
+    print("="*60)
+
+    # Show the Remarkable sync timestamp as reference
+    if doc_modified > 0:
+        sync_date = datetime.fromtimestamp(doc_modified).strftime('%Y-%m-%d %H:%M:%S')
+        print(f"Note: Remarkable sync timestamp: {sync_date}")
+        print("(This is when your tablet synced, not when you wrote the notes)")
+
+    print("\nWhich date should screenshots be retrieved from?")
+    print("Format: YYYY-MM-DD (e.g., 2026-03-08)")
+    print("Press Enter to skip screenshot transfer")
+
+    screenshot_date_input = input("\nEnter date: ").strip()
+
+    if screenshot_date_input:
+        try:
+            # Parse the date
+            screenshot_date = datetime.strptime(screenshot_date_input, '%Y-%m-%d').date()
+
+            if logger:
+                logger.info(f"Checking for screenshots from {screenshot_date.strftime('%Y-%m-%d')}...")
+
+            transferred_screenshots = obsidian_writer.transfer_screenshots(
+                screenshots_cfg.get('source_dir', '~/Desktop'),
+                screenshot_date)
+
+            if transferred_screenshots:
+                if logger:
+                    logger.info(f"Transferred {len(transferred_screenshots)} screenshot(s) from {screenshot_date.strftime('%Y-%m-%d')}")
+            else:
+                if logger:
+                    logger.info(f"No screenshots found from {screenshot_date.strftime('%Y-%m-%d')}")
+
+        except ValueError:
+            if logger:
+                logger.warning(f"Invalid date format '{screenshot_date_input}'. Expected YYYY-MM-DD. Skipping screenshot transfer.")
+        except Exception as e:
+            if logger:
+                logger.warning(f"Screenshot transfer failed: {e}")
+    else:
+        if logger:
+            logger.info("Screenshot transfer skipped (no date provided)")
+
+    return transferred_screenshots

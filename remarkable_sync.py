@@ -16,7 +16,7 @@ from PIL import Image
 from lib.remarkable import RemarkableClient, RemarkableError
 from lib.change_detector import ChangeDetector
 from lib.transcriber import Transcriber
-from lib.obsidian import ObsidianWriter
+from lib.obsidian import ObsidianWriter, prompt_and_transfer_screenshots
 from lib.anki import AnkiClient
 from lib.state import StateDB
 
@@ -93,16 +93,17 @@ def process_document(doc_name: str, doc_id: str, doc_modified: int,
                      rm_client: RemarkableClient, change_detector: ChangeDetector,
                      transcriber: Transcriber, obsidian_writer: ObsidianWriter,
                      anki_client: AnkiClient, state_db: StateDB, temp_dir: Path,
-                     logger: logging.Logger, dry_run: bool = False, force: bool = False,
-                     transferred_screenshots: List[str] = None) -> Dict:
+                     logger: logging.Logger, config: Dict, dry_run: bool = False, force: bool = False) -> Dict:
     """Process a single Remarkable document with optimized lazy page conversion.
 
     Optimization: Only converts pages to PNG when needed.
     1. First checks if new pages exist (beyond stored page count)
     2. Then checks last page hash to detect changes
     3. Only converts pages that need transcription
+
+    Screenshots are transferred based on the document's modification date,
+    not today's date, so screenshots match the notes they were taken with.
     """
-    transferred_screenshots = transferred_screenshots or []
     stats = {'pages_processed': 0, 'pages_changed': 0, 'cards_created': 0, 'success': False}
 
     try:
@@ -190,6 +191,16 @@ def process_document(doc_name: str, doc_id: str, doc_modified: int,
             state_db.mark_document_synced(doc_id)
             stats['success'] = True
             return stats
+
+        # Transfer screenshots - prompt user for date and transfer
+        screenshots_cfg = config.get('screenshots', {})
+        transferred_screenshots = prompt_and_transfer_screenshots(
+            obsidian_writer=obsidian_writer,
+            screenshots_cfg=screenshots_cfg,
+            doc_modified=doc_modified,
+            dry_run=dry_run,
+            logger=logger
+        )
 
         # Build list of paths for changed pages only
         changed_page_paths = []
@@ -298,18 +309,6 @@ def run_sync(config: Dict, logger: logging.Logger, dry_run: bool = False,
             anki_url = config.get('anki', {}).get('url', 'http://localhost:8765')
             anki_client = AnkiClient(anki_url)
 
-            # Screenshots transfer
-            transferred_screenshots = []
-            screenshots_cfg = config.get('screenshots', {})
-            if screenshots_cfg.get('enabled') and not dry_run:
-                try:
-                    transferred_screenshots = obsidian_writer.transfer_screenshots(
-                        screenshots_cfg.get('source_dir', '~/Desktop'), datetime.now().date())
-                    if transferred_screenshots:
-                        logger.info(f"Transferred {len(transferred_screenshots)} screenshot(s)")
-                except Exception as e:
-                    logger.warning(f"Screenshot transfer failed: {e}")
-
             logger.info("\nFetching documents...")
             try:
                 all_docs = rm_client.list_documents()
@@ -324,6 +323,16 @@ def run_sync(config: Dict, logger: logging.Logger, dry_run: bool = False,
                 if not docs_to_process:
                     logger.error(f"Document '{target_document}' not found")
                     return False
+                # Fetch actual modification timestamp for the target document
+                logger.info(f"Fetching metadata for '{target_document}'...")
+                for doc in docs_to_process:
+                    mod_time = rm_client.get_modification_timestamp(doc.name)
+                    doc.modified_timestamp = mod_time
+                    if mod_time > 0:
+                        mod_date = datetime.fromtimestamp(mod_time).strftime('%Y-%m-%d %H:%M:%S')
+                        logger.info(f"Document last modified: {mod_date}")
+                    else:
+                        logger.warning(f"Could not get modification timestamp for '{doc.name}'")
             else:
                 today_ts = int(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
                 logger.info(f"Checking for docs modified today...")
@@ -347,7 +356,7 @@ def run_sync(config: Dict, logger: logging.Logger, dry_run: bool = False,
                 stats = process_document(
                     doc.name, doc.id, doc.modified_timestamp,
                     rm_client, change_detector, transcriber, obsidian_writer,
-                    anki_client, state_db, temp_dir, logger, dry_run, force, transferred_screenshots)
+                    anki_client, state_db, temp_dir, logger, config, dry_run, force)
                 totals['docs'] += 1
                 if stats['success']: totals['succeeded'] += 1
                 totals['pages'] += stats['pages_processed']
