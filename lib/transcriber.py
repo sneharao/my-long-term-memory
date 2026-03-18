@@ -109,6 +109,7 @@ Mark uncertain words with [?]."""
 - **AWS**: Cloud services, certifications (SA, Cloud Practitioner)
 - **Software Architecture**: Design patterns, microservices, system design
 - **German Language**: Grammar, vocabulary, Goethe/TestDaF prep
+- **Python Programming**: Basics, Syntax, libraries, best practices
 {context_section}
 Handwritten notes:
 
@@ -149,8 +150,17 @@ Instructions:
 1. Identify key concepts, facts, and ideas.
 2. Create clear, specific flashcards.
 3. Keep order consistent with notes.
+4. Ignore AI Gap Analysis section.
+5. EVERY flashcard MUST have both a question AND a complete answer.
 
-Format: FLASHCARD: Question :: Answer"""
+CRITICAL: Use this EXACT format for EVERY card (single line):
+FLASHCARD: [Your question here] :: [Your complete answer here]
+
+Example:
+FLASHCARD: What is AWS Lambda? :: A serverless compute service that runs code in response to events
+FLASHCARD: What does S3 stand for? :: Simple Storage Service
+
+Now generate the flashcards:"""
 
         response = self.client.models.generate_content(
             model=self.model,
@@ -163,12 +173,50 @@ Format: FLASHCARD: Question :: Answer"""
             )
         )
 
+        # Parse flashcards - robust multi-line support, keep all questions
         flashcards = []
-        for line in response.text.split("\n"):
-            if "FLASHCARD:" in line and "::" in line:
-                parts = line.replace("FLASHCARD:", "").strip().split("::", 1)
-                if len(parts) == 2:
-                    flashcards.append((parts[0].strip(), parts[1].strip()))
+        cards_needing_answers = 0
+
+        # Split by FLASHCARD: markers to get individual cards
+        text = response.text
+        card_splits = text.split("FLASHCARD:")
+
+        for card_text in card_splits:
+            if not card_text.strip():
+                continue
+
+            question = None
+            answer = None
+
+            # Find the :: separator
+            if "::" in card_text:
+                # Split on first occurrence of ::
+                parts = card_text.split("::", 1)
+                question = parts[0].strip()
+                answer = parts[1].strip() if len(parts) > 1 else ""
+
+                # Clean up: remove extra whitespace but preserve intentional line breaks
+                question = " ".join(question.split())
+                if answer:
+                    answer = "\n".join(line.strip() for line in answer.split("\n") if line.strip())
+            else:
+                # No :: found, treat entire text as question
+                question = " ".join(card_text.split())
+
+            # Skip completely empty cards
+            if not question:
+                continue
+
+            # Use placeholder for missing answers
+            if not answer:
+                answer = "[NO ANSWER - ADD MANUALLY]"
+                cards_needing_answers += 1
+
+            flashcards.append((question, answer))
+
+        # Report results
+        if cards_needing_answers > 0:
+            print(f"⚠ {cards_needing_answers} card(s) need manual answers")
 
         print(f"✓ Generated {len(flashcards)} flashcard(s)")
         return flashcards
