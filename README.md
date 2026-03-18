@@ -59,7 +59,8 @@ An automated daily sync system that transforms your Remarkable tablet handwritte
 
 ```
 my-long-term-memory/
-├── remarkable_sync.py               # Main orchestrator
+├── remarkable_sync.py               # Main orchestrator (Remarkable → Obsidian → Anki)
+├── obsidian_to_anki.py              # Standalone Obsidian → Anki converter
 ├── automate.py                      # Legacy manual PDF drop workflow
 ├── config.yaml                      # Configuration settings
 ├── com.spidugu.remarkable-sync.plist # macOS launchd schedule
