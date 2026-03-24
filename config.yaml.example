@@ -16,6 +16,11 @@ ai:
   model: "gemini-2.5-flash"
   key_path: "your-service-account-key.json"
   thinking_budget: 2048
+  # SDK built-in retry configuration (handles 429 rate limits automatically)
+  retry_attempts: 5  # Max retry attempts (default: 5)
+  retry_initial_delay: 1.0  # Initial delay in seconds (default: 1.0)
+  retry_max_delay: 60  # Max delay between retries in seconds (default: 60)
+  timeout: 120  # Request timeout in seconds (default: 120)
 
 schedule:
   time: "20:30"

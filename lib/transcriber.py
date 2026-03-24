@@ -35,6 +35,12 @@ Mark uncertain words with [?]."""
         self.thinking_budget = ai_config.get('thinking_budget', 2048)
         key_path = ai_config.get('key_path')
 
+        # Retry configuration (SDK built-in)
+        initial_delay = ai_config.get('retry_initial_delay', 1.0)
+        max_attempts = ai_config.get('retry_attempts', 2)
+        max_delay = ai_config.get('retry_max_delay', 60)
+        timeout_seconds = ai_config.get('timeout', 120)
+
         if not all([self.project_id, self.location, key_path]):
             raise ValueError("Missing required AI configuration in config.yaml")
 
@@ -42,13 +48,24 @@ Mark uncertain words with [?]."""
             key_path, scopes=['https://www.googleapis.com/auth/cloud-platform']
         )
 
+        # Configure SDK's built-in retry logic for rate limits
         self.client = genai.Client(
             vertexai=True,
             project=self.project_id,
             location=self.location,
-            credentials=creds
+            credentials=creds,
+            http_options=types.HttpOptions(
+                retry_options=types.HttpRetryOptions(
+                    initial_delay=initial_delay,
+                    attempts=max_attempts,
+                    max_delay=max_delay,
+                    http_status_codes=[408, 429, 500, 502, 503, 504]  # Include 429 rate limit
+                ),
+                timeout=timeout_seconds * 1000  # Convert to milliseconds
+            )
         )
         print(f"✓ Transcriber initialized with model: {self.model}")
+        print(f"✓ Auto-retry enabled: {max_attempts} attempts, {initial_delay}s initial delay, {timeout_seconds}s timeout")
 
     def _transcribe_single_image(self, img: Image.Image) -> str:
         """Send image to Gemini for transcription."""
@@ -105,7 +122,7 @@ Mark uncertain words with [?]."""
         context_section = f"\nEXISTING CONTEXT:\n{existing_context}\n" if existing_context else ""
 
         prompt = f"""You are an expert teacher with deep knowledge in:
-- **AI/ML**: LLMs, AI Agents, RAG, Prompt Engineering
+- **AI/ML**: LLMs, Generative AI , AI Agents, RAG, Prompt Engineering 
 - **AWS**: Cloud services, certifications (SA, Cloud Practitioner)
 - **Software Architecture**: Design patterns, microservices, system design
 - **German Language**: Grammar, vocabulary, Goethe/TestDaF prep
